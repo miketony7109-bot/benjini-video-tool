@@ -1,0 +1,100 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv
+
+# Streamlit
+.streamlit/
+
+# Videos and Media
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.flv
+output/
+videos/
+temp/
+generated_videos/
+
+# Model files
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.model
+models/
+checkpoints/
+
+# Cache and temporary
+.cache/
+*.cache
+huggingface/
+.huggingface/
+tmp/
+*.tmp
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+secrets.py
+config.py
+
+# IDE and Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.code-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+logs/
+
+# OS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+*.lnk
