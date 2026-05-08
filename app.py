@@ -1,6 +1,6 @@
 """
-Benjini Video Tool - AI Text-to-Video Generator
-A Streamlit app for generating videos from text prompts using Wan 2.2 model
+Benjini Video Tool - AI Text-to-Video Generator (Streamlit Cloud Edition)
+A Streamlit app for generating videos from text prompts using optimized models
 """
 
 import streamlit as st
@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 import logging
+import numpy as np
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,11 +23,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# Custom CSS - Mobile optimized
 st.markdown("""
     <style>
     .main {
-        padding: 2rem;
+        padding: 1rem;
     }
     .stButton > button {
         width: 100%;
@@ -46,21 +47,22 @@ st.markdown("""
     .header-title {
         text-align: center;
         color: #667eea;
-        font-size: 3rem;
+        font-size: 2.5rem;
         font-weight: bold;
         margin-bottom: 0.5rem;
     }
     .header-subtitle {
         text-align: center;
         color: #666;
-        font-size: 1.2rem;
-        margin-bottom: 2rem;
+        font-size: 1rem;
+        margin-bottom: 1.5rem;
     }
     .info-box {
         background-color: #f0f2f6;
         padding: 1.5rem;
         border-radius: 0.5rem;
         margin: 1rem 0;
+        font-size: 0.9rem;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -69,41 +71,74 @@ st.markdown("""
 OUTPUT_DIR = Path("generated_videos")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-def load_model():
-    """Load the Wan 2.2 model"""
+# Cache the model load to avoid reloading
+@st.cache_resource
+def load_model(model_choice):
+    """Load the selected video generation model with caching"""
     try:
-        from diffusers import WanPipeline
+        st.info("🔄 Loading model... This may take a moment on first run.")
         
-        st.info("🔄 Loading Wan 2.2 model... This may take a moment on first run.")
+        if model_choice == "Stable Video Diffusion (Fast ⚡)":
+            from diffusers import StableVideoDiffusionPipeline
+            from diffusers.utils import load_image
+            
+            model_id = "stabilityai/stable-video-diffusion-img2vid-xt"
+            
+            pipe = StableVideoDiffusionPipeline.from_pretrained(
+                model_id,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                variant="fp16" if torch.cuda.is_available() else None
+            )
+            
+        elif model_choice == "Text2Video-Zero (Lightweight)":
+            from diffusers import TextToVideoSDPipeline
+            
+            model_id = "damo-viton-xl/Text2Video-Zero"
+            
+            pipe = TextToVideoSDPipeline.from_pretrained(
+                model_id,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+            )
         
-        model_id = "wanx-ai/Wan-2.2-T2V-A14B"
-        
-        # Load pipeline
-        pipe = WanPipeline.from_pretrained(
-            model_id,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
-        )
+        else:  # Default lightweight option
+            from diffusers import AnimateDiffPipeline
+            from diffusers.models import MotionAdapter
+            
+            model_id = "guoyww/animatediff-motion-adapter-v1-5-2"
+            
+            motion_adapter = MotionAdapter.from_pretrained(model_id)
+            pipe = AnimateDiffPipeline.from_pretrained(
+                "runwayml/stable-diffusion-v1-5",
+                motion_adapter=motion_adapter,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+            )
         
         # Move to GPU if available
         if torch.cuda.is_available():
             pipe = pipe.to("cuda")
             st.success("✅ Model loaded on GPU!")
         else:
-            st.warning("⚠️ GPU not detected. Using CPU (slower). For better performance, use a GPU.")
+            st.warning("⚠️ Using CPU (slower). Videos may take longer to generate.")
             pipe = pipe.to("cpu")
         
+        # Enable memory optimization
+        if hasattr(pipe, "enable_attention_slicing"):
+            pipe.enable_attention_slicing()
+        
         return pipe
+        
     except Exception as e:
         st.error(f"❌ Error loading model: {str(e)}")
         logger.error(f"Model loading error: {str(e)}")
         return None
 
-def generate_video(pipe, prompt, negative_prompt, num_steps, guidance_scale, height, width, num_frames):
+def generate_video(pipe, prompt, negative_prompt, num_steps, guidance_scale, height, width):
     """Generate video from text prompt"""
     try:
         logger.info(f"Generating video with prompt: {prompt}")
         
-        with st.spinner("🎬 Generating your video... This may take 2-10 minutes depending on your hardware."):
+        with st.spinner("🎬 Generating your video... Please wait."):
+            # Simple inference - works with most pipelines
             output = pipe(
                 prompt=prompt,
                 negative_prompt=negative_prompt if negative_prompt else None,
@@ -111,131 +146,152 @@ def generate_video(pipe, prompt, negative_prompt, num_steps, guidance_scale, hei
                 guidance_scale=float(guidance_scale),
                 height=int(height),
                 width=int(width),
-                num_frames=int(num_frames),
                 generator=torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(42)
             )
             
-            videos = output.videos
-            return videos[0] if videos else None
+            # Extract video from output
+            if hasattr(output, 'videos'):
+                return output.videos[0]
+            elif hasattr(output, 'frames'):
+                return output.frames
+            else:
+                return output
+                
     except Exception as e:
         st.error(f"❌ Error during generation: {str(e)}")
         logger.error(f"Generation error: {str(e)}")
         return None
 
 def save_video(video_frames, filename):
-    """Save video frames to file"""
+    """Save video frames to MP4 file"""
     try:
         import cv2
-        import numpy as np
         
         filepath = OUTPUT_DIR / filename
         
-        # Assuming video_frames is a PIL Image or numpy array
-        # Convert to numpy array if needed
+        # Convert video frames to numpy array
         if hasattr(video_frames, 'numpy'):
             frames = video_frames.numpy()
+        elif isinstance(video_frames, list):
+            frames = np.array([np.array(f) for f in video_frames])
         else:
             frames = np.array(video_frames)
         
+        # Ensure frames are in the right shape
+        if frames.ndim == 3:  # Single image
+            frames = np.expand_dims(frames, 0)
+        
         # Define codec and create video writer
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        fps = 15
+        fps = 8  # Lower FPS for compatibility
         
-        if frames.ndim == 4:  # Multiple frames
+        if frames.ndim >= 3:
             height, width = frames[0].shape[:2]
             out = cv2.VideoWriter(str(filepath), fourcc, fps, (width, height))
             
+            frame_count = 0
             for frame in frames:
-                if frame.dtype == np.float32 or frame.dtype == np.float64:
-                    frame = (frame * 255).astype(np.uint8)
-                out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                if frame.dtype in [np.float32, np.float64]:
+                    frame = (np.clip(frame, 0, 1) * 255).astype(np.uint8)
+                
+                if frame.shape[2] == 3:  # RGB
+                    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                
+                out.write(frame)
+                frame_count += 1
+            
             out.release()
+            logger.info(f"Video saved: {frame_count} frames to {filepath}")
+            return filepath
         
-        return filepath
+        return None
+        
     except Exception as e:
         logger.error(f"Error saving video: {str(e)}")
+        st.error(f"Could not save video: {str(e)}")
         return None
 
 # Main UI
 st.markdown('<div class="header-title">🎬 Benjini Video Tool</div>', unsafe_allow_html=True)
-st.markdown('<div class="header-subtitle">Generate 30-Second Videos from Text Prompts using AI</div>', unsafe_allow_html=True)
+st.markdown('<div class="header-subtitle">Generate Videos from Text | Streamlit Cloud Edition</div>', unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Settings")
     
+    # Model selection
+    st.subheader("Model Selection")
+    model_choice = st.radio(
+        "Choose a model:",
+        [
+            "Stable Video Diffusion (Fast ⚡)",
+            "Text2Video-Zero (Lightweight)",
+            "AnimateDiff (Smooth)"
+        ],
+        index=0,
+        help="Stable Video Diffusion is fastest for Streamlit Cloud"
+    )
+    
+    st.divider()
+    
     st.subheader("Video Parameters")
-    duration_seconds = st.slider("Video Duration (seconds):", 5, 30, 10)
-    num_frames = int((duration_seconds / 5) * 25)  # Approximate frames
+    height = st.selectbox("Video Height:", [480, 576, 720], index=1)
+    width = st.selectbox("Video Width:", [768, 1024, 1280], index=1)
     
-    height = st.selectbox("Video Height:", [480, 576, 720], index=2)
-    width = st.selectbox("Video Width:", [848, 1024, 1280], index=2)
-    
-    num_inference_steps = st.slider("Quality Steps (more = better quality, slower):", 20, 50, 30)
-    guidance_scale = st.slider("Prompt Adherence:", 1.0, 10.0, 5.0)
+    num_inference_steps = st.slider("Quality Steps:", 20, 50, 30)
+    guidance_scale = st.slider("Prompt Adherence:", 1.0, 10.0, 7.5)
     
     st.divider()
     
     st.subheader("About")
     st.info("""
-    **Benjini Video Tool** uses the Wan 2.2 model to generate 
-    high-quality videos from text descriptions.
+    **Benjini Video Tool** generates videos from text.
     
-    - 📹 Supports up to 30-second videos
-    - 🎨 High-quality output
-    - ⚡ Optimized for consumer GPUs
-    - 🆓 100% free and open-source
+    ⚡ **Streamlit Cloud Edition**
+    - Uses lighter models
+    - Faster generation
+    - Mobile friendly
     
-    **Requirements:**
-    - GPU with 8GB+ VRAM recommended
-    - Stable internet connection
-    - Patience (first run downloads ~30GB model)
+     **Tips:**
+    - Be descriptive
+    - Include style
+    - First run may be slower
+    
+    📖 Learn more: https://github.com/miketony7109-bot/benjini-video-tool
     """)
 
 # Main content
-col1, col2 = st.columns([1, 1])
+st.subheader("📝 Prompt")
+prompt = st.text_area(
+    "Enter your video prompt:",
+    placeholder="e.g., A serene mountain landscape at sunset, cinematic quality, 4K",
+    height=80
+)
 
+negative_prompt = st.text_area(
+    "Negative prompt (optional):",
+    placeholder="e.g., blurry, low quality, distorted, ugly",
+    height=60
+)
+
+st.divider()
+
+# Generation info
+col1, col2 = st.columns(2)
 with col1:
-    st.subheader("📝 Prompt")
-    prompt = st.text_area(
-        "Enter your video prompt:",
-        placeholder="e.g., A serene landscape with mountains and sunset, cinematic quality",
-        height=100
-    )
-    
-    negative_prompt = st.text_area(
-        "Negative prompt (optional):",
-        placeholder="e.g., blurry, low quality, distorted",
-        height=80
-    )
-
+    st.metric("Resolution", f"{width}x{height}")
 with col2:
-    st.subheader("ℹ️ Information")
-    st.info(f"""
-    **Generation Settings:**
-    - Duration: ~{duration_seconds} seconds
-    - Resolution: {width}x{height}
-    - Steps: {num_inference_steps}
-    - Guidance Scale: {guidance_scale}
-    - Estimated Frames: {num_frames}
-    
-    **Expected Time:** 2-10 minutes depending on your hardware
-    
-    **Tips:**
-    - Be descriptive in your prompt
-    - Include style (cinematic, cartoon, etc.)
-    - Specify camera movement if desired
-    """)
+    st.metric("Steps", num_inference_steps)
 
 st.divider()
 
 # Generate button
-if st.button("🚀 Generate Video", use_container_width=True):
+if st.button("🚀 Generate Video", use_container_width=True, key="generate_btn"):
     if not prompt.strip():
         st.error("❌ Please enter a prompt!")
     else:
-        # Load model
-        pipe = load_model()
+        # Load model with caching
+        pipe = load_model(model_choice)
         
         if pipe:
             # Generate video
@@ -246,8 +302,7 @@ if st.button("🚀 Generate Video", use_container_width=True):
                 num_inference_steps,
                 guidance_scale,
                 height,
-                width,
-                num_frames
+                width
             )
             
             if video is not None:
@@ -259,18 +314,30 @@ if st.button("🚀 Generate Video", use_container_width=True):
                 
                 filepath = save_video(video, filename)
                 
-                if filepath:
-                    st.info(f"✅ Video saved to: {filepath}")
-                
-                # Display video
-                st.video(str(filepath)) if filepath else st.warning("Could not display video")
+                if filepath and filepath.exists():
+                    st.info(f"✅ Video saved successfully!")
+                    
+                    # Display video
+                    try:
+                        with open(filepath, "rb") as f:
+                            st.video(f)
+                    except Exception as e:
+                        st.warning(f"Could not display video: {str(e)}")
+                        st.download_button(
+                            label="📥 Download Video",
+                            data=open(filepath, "rb"),
+                            file_name=filename,
+                            mime="video/mp4"
+                        )
+            else:
+                st.error("❌ Video generation failed. Please try again or adjust parameters.")
 
 st.divider()
 
 # Footer
 st.markdown("""
 ---
-**Benjini Video Tool** | Powered by Wan 2.2 & Streamlit | 🚀 Open Source
+**Benjini Video Tool** | Streamlit Cloud Edition | 🚀 Open Source
 
-For issues and updates, visit: https://github.com/miketony7109-bot/benjini-video-tool
+For issues: https://github.com/miketony7109-bot/benjini-video-tool/issues
 """)
